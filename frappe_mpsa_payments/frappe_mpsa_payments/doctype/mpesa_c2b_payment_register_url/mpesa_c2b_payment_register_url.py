@@ -19,6 +19,7 @@ class MpesaC2BPaymentRegisterURL(Document):
     LIVE_URL = "https://api.safaricom.co.ke"
     API_VERSIONS = ["v2", "v1"]
     PRODUCT_MISMATCH_ERROR_CODE = "401.003.01"
+    ALREADY_REGISTERED_ERROR_CODE = "500.003.1001"
 
     def validate(self):
         mpesa_settings = self._get_mpesa_settings()
@@ -94,6 +95,11 @@ class MpesaC2BPaymentRegisterURL(Document):
 
     def _is_success_response(self, response: dict) -> bool:
         return response.get("ResponseDescription") == "Success"
+
+    def _is_already_registered_error(self, response: dict) -> bool:
+        error_code_match = response.get("errorCode") == self.ALREADY_REGISTERED_ERROR_CODE
+        text_match = "urls are already registered" in str(response).lower()
+        return error_code_match or text_match
 
     def _log_failure(self, version: str, response: dict):
         frappe.log_error(
@@ -183,6 +189,17 @@ class MpesaC2BPaymentRegisterURL(Document):
                 return False, response, True  # Retry with next version
 
         except requests.exceptions.HTTPError as error:
+            # Safaricom uses a 500 for "URLs are already registered", which
+            # isn't a failure - it means this shortcode is already set up.
+            # Without this check we'd retry with the next API version and
+            # surface a confusing 401 from v1 for a shortcode that's fine.
+            try:
+                error_response = error.response.json()
+            except Exception:
+                error_response = None
+            if error_response and self._is_already_registered_error(error_response):
+                return True, error_response, False
+
             is_last = version == self.API_VERSIONS[-1]
             should_retry = self._handle_http_error(error, version, is_last)
             return False, error, should_retry
