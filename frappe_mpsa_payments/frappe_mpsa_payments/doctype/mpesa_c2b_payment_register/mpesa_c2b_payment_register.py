@@ -218,6 +218,19 @@ class MpesaC2BPaymentRegister(Document):
         if not settings.auto_reconcile_c2b or not self.payment_entry:
             return
 
+        # create_payment_entry() calls ERPNext's own Payment Entry
+        # set_missing_values(), which auto-references the new entry against
+        # the party's oldest outstanding invoice when no explicit reference
+        # was passed in. That leaves nothing left to allocate here, and
+        # attempting to reconcile an already-fully-allocated payment throws
+        # a misleading "No records found in Allocation table" error instead
+        # of just being a no-op.
+        unallocated_amount = frappe.db.get_value(
+            "Payment Entry", self.payment_entry, "unallocated_amount"
+        )
+        if not unallocated_amount:
+            return
+
         invoice, order = self._get_matching_refs()
 
         if order and settings.auto_create_sales_invoice:
