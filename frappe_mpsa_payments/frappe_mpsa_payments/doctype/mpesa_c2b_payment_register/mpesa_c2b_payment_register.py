@@ -191,6 +191,24 @@ class MpesaC2BPaymentRegister(Document):
         if not billrefnumber:
             return
 
+        # Property-management style billing uses a tenant-facing Account
+        # Number (e.g. "JBH1" = Property Abbreviation + House Number),
+        # stored on the Sales Invoice as custom_account_number - not the
+        # invoice's own name. Check that first since it's the actual
+        # reference tenants are told to use when paying. Falls through to
+        # the generic name-based sources below if this field doesn't exist
+        # or doesn't match, so other integrations aren't affected.
+        if frappe.get_meta("Sales Invoice").has_field("custom_account_number"):
+            customer = frappe.db.get_value(
+                "Sales Invoice",
+                {"custom_account_number": billrefnumber, "docstatus": 1},
+                "customer",
+                order_by="posting_date asc",
+            )
+            if customer:
+                self.customer = customer
+                return
+
         sources = [
             ("Sales Invoice", "customer", {"docstatus": 1}),
             ("Sales Order", "customer", {"docstatus": 1}),
@@ -263,6 +281,26 @@ class MpesaC2BPaymentRegister(Document):
     def _find_matching_invoice(self):
         if not self.billrefnumber:
             return None
+
+        # Same account-number scheme as _find_customer_from_billref(). A
+        # single account number can legitimately match several outstanding
+        # invoices for the same house (e.g. unpaid across multiple billing
+        # months) - reconcile against the oldest one first.
+        if frappe.get_meta("Sales Invoice").has_field("custom_account_number"):
+            invoice = frappe.db.get_value(
+                "Sales Invoice",
+                {
+                    "custom_account_number": self.billrefnumber,
+                    "docstatus": 1,
+                    "company": self.company,
+                    "customer": self.customer,
+                    "outstanding_amount": (">", 0),
+                },
+                "name",
+                order_by="posting_date asc",
+            )
+            if invoice:
+                return invoice
 
         return frappe.get_value(
             "Sales Invoice",
