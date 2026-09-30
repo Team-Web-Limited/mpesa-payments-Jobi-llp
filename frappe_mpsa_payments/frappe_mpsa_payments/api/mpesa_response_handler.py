@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import frappe
 from frappe.utils import now_datetime
 
@@ -193,6 +195,23 @@ def _flatten_pull_transactions(raw) -> list:
     return flat
 
 
+def _parse_trxdate(trxdate: str):
+    """Parse Safaricom's Pull API trxDate (e.g. '2025-07-21T14:00:22+03:00') into
+    a (date, time) pair for posting_date/posting_time. Safaricom always sends
+    Kenya local time and Kenya has no DST, which matches the site's fixed
+    Africa/Nairobi timezone, so the wall-clock value is used as-is rather than
+    converting through a timezone library.
+    """
+    if not trxdate:
+        return None, None
+    date_part = trxdate.split("+")[0].rstrip("Z")
+    try:
+        dt = datetime.strptime(date_part, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None, None
+    return dt.date(), dt.time()
+
+
 def pull_transaction_on_success(response: dict, document_name: str, **kwargs) -> None:
     settings = frappe.get_doc(MPESA_SETTINGS_DOCTYPE, kwargs.get("settings_name", document_name))
     shortcode = settings.till_number if settings.sandbox else settings.business_shortcode
@@ -280,6 +299,17 @@ def pull_transaction_on_success(response: dict, document_name: str, **kwargs) ->
             doc.businessshortcode = shortcode
             doc.billrefnumber = txn.get("billreference", "")
             doc.transactiontype = txn.get("transactiontype", "")
+
+            # posting_date/posting_time default to "Today"/"Now" (insert time).
+            # Since Pull Transactions can run well after the payment happened
+            # (e.g. a payment at 11:30pm pulled at 12:30am the next day), that
+            # default would misdate the transaction by a day. Use the actual
+            # transaction time Safaricom reports instead.
+            trx_date, trx_time = _parse_trxdate(txn.get("trxDate", ""))
+            if trx_date:
+                doc.posting_date = trx_date
+                doc.posting_time = trx_time
+
             doc.insert(ignore_permissions=True)
 
             created_records.append({
