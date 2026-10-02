@@ -107,11 +107,18 @@ class MpesaC2BPaymentRegister(Document):
             invoice, order = self._get_matching_refs()
 
             if invoice:
+                # The matched invoice may already be partly paid (or this payment may
+                # overpay it), so allocating the full transamount can exceed what's
+                # actually outstanding - ERPNext rejects that outright. Cap the
+                # allocation to the outstanding balance; any leftover is picked up by
+                # _reconcile_payment()'s FIFO fallback against the customer's other
+                # outstanding invoices once this submits (via unallocated_amount).
+                outstanding = frappe.db.get_value("Sales Invoice", invoice, "outstanding_amount") or 0
                 refs.append(
                     {
                         "reference_doctype": "Sales Invoice",
                         "reference_name": invoice,
-                        "allocated_amount": self.transamount,
+                        "allocated_amount": min(self.transamount, outstanding),
                     }
                 )
 
